@@ -2,3 +2,8 @@
   command = "pip install -r requirements.txt"
   functions = "functions"
   publish = "public"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
