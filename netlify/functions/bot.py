@@ -54,9 +54,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Error: {e}")
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Error processing request.")
 
-async def handler(event, context):
+async def async_handler(event, context):
     """
-    Netlify Function Handler
+    Async Handler logic
     """
     global application
     
@@ -100,3 +100,14 @@ async def handler(event, context):
             'statusCode': 500,
             'body': str(e)
         }
+
+def handler(event, context):
+    """
+    Synchronous Entry Point for Netlify/Lambda
+    """
+    loop = asyncio.get_event_loop()
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(async_handler(event, context))
+
