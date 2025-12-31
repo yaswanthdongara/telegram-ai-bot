@@ -27,7 +27,9 @@ async function getAIResponse(messages) {
       },
       body: JSON.stringify({
         model: "openai/gpt-3.5-turbo",
-        messages
+        messages,
+        max_tokens: 512, 
+        temperature: 0.7
       })
     }
   );
@@ -113,3 +115,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
+
