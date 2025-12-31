@@ -59,7 +59,7 @@ function isLongText(text) {
 function getMaxTokens(text) {
   if (isCodeQuestion(text)) return 300;
   if (isLongText(text)) return 150;
-  return 50;
+  return 75;
 }
 
 function looksTruncated(text) {
