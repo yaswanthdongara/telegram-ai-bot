@@ -17,26 +17,65 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 
 /* ===============================
-   SYSTEM PROMPT (Emoji + Tone)
+   SYSTEM PROMPT
    =============================== */
 
 const SYSTEM_PROMPT = {
   role: "system",
   content:
-    "You are a friendly Telegram bot 🤖. Reply interactively using relevant emojis 😊✨. Keep answers concise, clear, and helpful. Do not overuse emojis."
+    "You are a friendly Telegram bot 🤖. Use relevant emojis sparingly 😊✨. " +
+    "For coding questions, ALWAYS return the FULL code without truncation. " +
+    "For normal questions, keep answers short and clear."
 };
 
 /* ===============================
-   CHAT HISTORY STORE
+   CHAT HISTORY
    =============================== */
 
 const chatHistory = new Map(); // chatId -> messages[]
 
 /* ===============================
+   TOKEN DECISION LOGIC
+   =============================== */
+
+function isCodeQuestion(text) {
+  return (
+    text.includes("code") ||
+    text.includes("class ") ||
+    text.includes("def ") ||
+    text.includes("{") ||
+    text.includes("}") ||
+    text.includes("function") ||
+    text.includes("while") ||
+    text.includes("for(") ||
+    text.includes("```")
+  );
+}
+
+function isLongText(text) {
+  return text.length > 120;
+}
+
+function getMaxTokens(text) {
+  if (isCodeQuestion(text)) return 300;
+  if (isLongText(text)) return 150;
+  return 50;
+}
+
+function looksTruncated(text) {
+  return (
+    !text.trim().endsWith(".") &&
+    !text.trim().endsWith("!") &&
+    !text.trim().endsWith("?") &&
+    !text.trim().endsWith("```")
+  );
+}
+
+/* ===============================
    AI RESPONSE FUNCTION
    =============================== */
 
-async function getAIResponse(messages) {
+async function getAIResponse(messages, maxTokens) {
   const response = await fetch(
     "https://openrouter.ai/api/v1/chat/completions",
     {
@@ -48,17 +87,14 @@ async function getAIResponse(messages) {
       body: JSON.stringify({
         model: "openai/gpt-3.5-turbo",
         messages,
-        max_tokens: 75,     // ✅ short & cheap
+        max_tokens: maxTokens,
         temperature: 0.7
       })
     }
   );
 
   const data = await response.json();
-
-  if (data.error) {
-    throw new Error(data.error.message);
-  }
+  if (data.error) throw new Error(data.error.message);
 
   return data.choices[0].message.content;
 }
@@ -68,7 +104,7 @@ async function getAIResponse(messages) {
    =============================== */
 
 app.get("/", (_, res) => {
-  res.send("🤖 Telegram AI Bot is running");
+  res.send("🤖 Telegram AI Bot running");
 });
 
 /* ===============================
@@ -101,8 +137,6 @@ if (TOKEN && BASE_URL) {
       }
 
       const history = chatHistory.get(chatId);
-
-      // Add user message
       history.push({ role: "user", content: text });
 
       // Limit history to last 10 messages
@@ -110,30 +144,40 @@ if (TOKEN && BASE_URL) {
         history.splice(0, history.length - 10);
       }
 
-      // Inject system prompt
+      const maxTokens = getMaxTokens(text);
+
       const messages = [
         SYSTEM_PROMPT,
         ...history
       ];
 
-      const reply = await getAIResponse(messages);
+      let reply = await getAIResponse(messages, maxTokens);
 
-      // Save assistant reply
+      // Auto-continue for truncated code responses
+      if (isCodeQuestion(text) && looksTruncated(reply)) {
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "user",
+          content: "Continue the remaining code completely."
+        });
+
+        const continuation = await getAIResponse(messages, 300);
+        reply = reply + "\n" + continuation;
+      }
+
       history.push({ role: "assistant", content: reply });
-
       bot.sendMessage(chatId, reply);
 
     } catch (err) {
       console.error("Bot Error:", err.message);
       bot.sendMessage(
         chatId,
-        "⚠️ Oops! Something went wrong. Please try again later 😊"
+        "⚠️ Something went wrong. Please try again later 😊"
       );
     }
   });
 
   console.log("Telegram Bot started in WEBHOOK mode ✅");
-
 } else {
   console.warn("Missing TELEGRAM_BOT_TOKEN or RENDER_EXTERNAL_URL");
 }
