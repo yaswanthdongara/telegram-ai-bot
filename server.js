@@ -24,8 +24,9 @@ const SYSTEM_PROMPT = {
   role: "system",
   content:
     "You are a friendly Telegram bot 🤖. Use relevant emojis sparingly 😊✨. " +
-    "For coding questions, ALWAYS return the FULL code without truncation. " +
-    "For normal questions, keep answers short and clear."
+    "Always complete sentences and explanations fully. " +
+    "For coding questions, always return the FULL code without truncation. " +
+    "For normal questions, be concise but never cut off mid-sentence."
 };
 
 /* ===============================
@@ -39,16 +40,8 @@ const chatHistory = new Map(); // chatId -> messages[]
    =============================== */
 
 function isCodeQuestion(text) {
-  return (
-    text.includes("code") ||
-    text.includes("class ") ||
-    text.includes("def ") ||
-    text.includes("{") ||
-    text.includes("}") ||
-    text.includes("function") ||
-    text.includes("while") ||
-    text.includes("for(") ||
-    text.includes("```")
+  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(
+    text
   );
 }
 
@@ -59,16 +52,12 @@ function isLongText(text) {
 function getMaxTokens(text) {
   if (isCodeQuestion(text)) return 300;
   if (isLongText(text)) return 150;
-  return 75;
+  return 50;
 }
 
-function looksTruncated(text) {
-  return (
-    !text.trim().endsWith(".") &&
-    !text.trim().endsWith("!") &&
-    !text.trim().endsWith("?") &&
-    !text.trim().endsWith("```")
-  );
+// Detect truncation based on token pressure
+function looksTruncated(text, maxTokens) {
+  return text.length >= Math.floor(maxTokens * 3.5); // ~token → char estimate
 }
 
 /* ===============================
@@ -100,6 +89,17 @@ async function getAIResponse(messages, maxTokens) {
 }
 
 /* ===============================
+   TELEGRAM MESSAGE SAFETY
+   =============================== */
+
+function sendLongMessage(bot, chatId, text) {
+  const MAX = 4000;
+  for (let i = 0; i < text.length; i += MAX) {
+    bot.sendMessage(chatId, text.slice(i, i + MAX));
+  }
+}
+
+/* ===============================
    HEALTH CHECK
    =============================== */
 
@@ -115,7 +115,6 @@ let bot;
 
 if (TOKEN && BASE_URL) {
   bot = new TelegramBot(TOKEN);
-
   bot.setWebHook(`${BASE_URL}/webhook`);
   console.log("Webhook set:", `${BASE_URL}/webhook`);
 
@@ -139,7 +138,6 @@ if (TOKEN && BASE_URL) {
       const history = chatHistory.get(chatId);
       history.push({ role: "user", content: text });
 
-      // Limit history to last 10 messages
       if (history.length > 10) {
         history.splice(0, history.length - 10);
       }
@@ -153,20 +151,27 @@ if (TOKEN && BASE_URL) {
 
       let reply = await getAIResponse(messages, maxTokens);
 
-      // Auto-continue for truncated code responses
-      if (isCodeQuestion(text) && looksTruncated(reply)) {
+      // 🔥 AUTO-CONTINUE FOR BOTH CHAT & CODE
+      let safetyCounter = 0;
+      while (looksTruncated(reply, maxTokens) && safetyCounter < 3) {
         messages.push({ role: "assistant", content: reply });
         messages.push({
           role: "user",
-          content: "Continue the remaining code completely."
+          content: "Please continue and complete the response."
         });
 
-        const continuation = await getAIResponse(messages, 300);
-        reply = reply + "\n" + continuation;
+        const continuation = await getAIResponse(
+          messages,
+          isCodeQuestion(text) ? 300 : 150
+        );
+
+        reply += " " + continuation;
+        safetyCounter++;
       }
 
       history.push({ role: "assistant", content: reply });
-      bot.sendMessage(chatId, reply);
+
+      sendLongMessage(bot, chatId, reply);
 
     } catch (err) {
       console.error("Bot Error:", err.message);
@@ -178,8 +183,6 @@ if (TOKEN && BASE_URL) {
   });
 
   console.log("Telegram Bot started in WEBHOOK mode ✅");
-} else {
-  console.warn("Missing TELEGRAM_BOT_TOKEN or RENDER_EXTERNAL_URL");
 }
 
 /* ===============================
