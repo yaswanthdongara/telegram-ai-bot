@@ -17,7 +17,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 
 /* ===============================
-   SYSTEM PROMPT (STRICT)
+   SYSTEM PROMPT (STRICT RULES)
    =============================== */
 
 const SYSTEM_PROMPT = {
@@ -25,11 +25,12 @@ const SYSTEM_PROMPT = {
   content:
     "You are a Telegram bot 🤖.\n" +
     "RULES:\n" +
-    "1) For NORMAL questions → respond in EXACTLY ONE SENTENCE.\n" +
-    "2) Do NOT explain, do NOT add examples.\n" +
-    "3) For LONG questions → give a short paragraph.\n" +
-    "4) For CODE questions → return FULL code only.\n" +
-    "5) Use at most one emoji if helpful."
+    "1) NORMAL questions → EXACTLY ONE complete sentence.\n" +
+    "2) Do NOT explain or give examples.\n" +
+    "3) LONG questions → short paragraph.\n" +
+    "4) CODE questions → FULL code only.\n" +
+    "5) Never leave sentences incomplete.\n" +
+    "6) Use at most one emoji."
 };
 
 /* ===============================
@@ -43,11 +44,17 @@ const chatHistory = new Map();
    =============================== */
 
 function isCodeQuestion(text) {
-  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(text);
+  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(
+    text
+  );
 }
 
 function isLongQuestion(text) {
   return text.length > 120;
+}
+
+function endsCleanly(text) {
+  return /[.!?]$/.test(text.trim());
 }
 
 /* ===============================
@@ -57,11 +64,11 @@ function isLongQuestion(text) {
 function getMaxTokens(text) {
   if (isCodeQuestion(text)) return 300;
   if (isLongQuestion(text)) return 150;
-  return 40; // 🔥 single sentence only
+  return 40; // single sentence
 }
 
 /* ===============================
-   OPENROUTER CALL
+   OPENROUTER REQUEST
    =============================== */
 
 async function getAIResponse(messages, maxTokens) {
@@ -105,7 +112,7 @@ app.get("/", (_, res) => {
 });
 
 /* ===============================
-   TELEGRAM BOT (WEBHOOK)
+   TELEGRAM BOT (WEBHOOK MODE)
    =============================== */
 
 let bot;
@@ -147,10 +154,29 @@ if (TOKEN && BASE_URL) {
 
       let reply = await getAIResponse(messages, maxTokens);
 
-      /* ✅ AUTO-CONTINUE ONLY FOR CODE */
+      /* 🔒 FIX: COMPLETE SHORT SENTENCES SAFELY */
+      if (
+        !isCodeQuestion(text) &&
+        !isLongQuestion(text) &&
+        !endsCleanly(reply)
+      ) {
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "user",
+          content: "Complete the sentence in ONE sentence only."
+        });
+
+        const completion = await getAIResponse(messages, 20);
+        reply = reply + " " + completion;
+      }
+
+      /* 🔥 AUTO-CONTINUE ONLY FOR CODE */
       if (isCodeQuestion(text) && reply.length >= 0.9 * maxTokens * 3.5) {
         messages.push({ role: "assistant", content: reply });
-        messages.push({ role: "user", content: "Continue and complete the code." });
+        messages.push({
+          role: "user",
+          content: "Continue and complete the remaining code."
+        });
 
         const continuation = await getAIResponse(messages, 300);
         reply += "\n" + continuation;
