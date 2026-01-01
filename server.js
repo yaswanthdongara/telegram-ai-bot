@@ -17,70 +17,67 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 
 /* ===============================
-   SYSTEM PROMPT
+   SYSTEM PROMPT (STRICT)
    =============================== */
 
 const SYSTEM_PROMPT = {
   role: "system",
   content:
-    "You are a friendly Telegram bot 🤖. Use relevant emojis sparingly 😊✨. " +
-    "Always complete sentences and explanations fully. " +
-    "For coding questions, always return the FULL code without truncation. " +
-    "For normal questions, be concise but never cut off mid-sentence."
+    "You are a Telegram bot 🤖.\n" +
+    "RULES:\n" +
+    "1) For NORMAL questions → respond in EXACTLY ONE SENTENCE.\n" +
+    "2) Do NOT explain, do NOT add examples.\n" +
+    "3) For LONG questions → give a short paragraph.\n" +
+    "4) For CODE questions → return FULL code only.\n" +
+    "5) Use at most one emoji if helpful."
 };
 
 /* ===============================
    CHAT HISTORY
    =============================== */
 
-const chatHistory = new Map(); // chatId -> messages[]
+const chatHistory = new Map();
 
 /* ===============================
-   TOKEN DECISION LOGIC
+   QUESTION TYPE DETECTION
    =============================== */
 
 function isCodeQuestion(text) {
-  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(
-    text
-  );
+  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(text);
 }
 
-function isLongText(text) {
+function isLongQuestion(text) {
   return text.length > 120;
 }
 
+/* ===============================
+   TOKEN DECISION
+   =============================== */
+
 function getMaxTokens(text) {
   if (isCodeQuestion(text)) return 300;
-  if (isLongText(text)) return 150;
-  return 50;
-}
-
-// Detect truncation based on token pressure
-function looksTruncated(text, maxTokens) {
-  return text.length >= Math.floor(maxTokens * 3.5); // ~token → char estimate
+  if (isLongQuestion(text)) return 150;
+  return 40; // 🔥 single sentence only
 }
 
 /* ===============================
-   AI RESPONSE FUNCTION
+   OPENROUTER CALL
    =============================== */
 
 async function getAIResponse(messages, maxTokens) {
-  const response = await fetch(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.AI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-3.5-turbo",
-        messages,
-        max_tokens: maxTokens,
-        temperature: 0.7
-      })
-    }
-  );
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.AI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-3.5-turbo",
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.5
+    })
+  });
 
   const data = await response.json();
   if (data.error) throw new Error(data.error.message);
@@ -108,7 +105,7 @@ app.get("/", (_, res) => {
 });
 
 /* ===============================
-   TELEGRAM BOT (WEBHOOK MODE)
+   TELEGRAM BOT (WEBHOOK)
    =============================== */
 
 let bot;
@@ -116,7 +113,6 @@ let bot;
 if (TOKEN && BASE_URL) {
   bot = new TelegramBot(TOKEN);
   bot.setWebHook(`${BASE_URL}/webhook`);
-  console.log("Webhook set:", `${BASE_URL}/webhook`);
 
   app.post("/webhook", (req, res) => {
     bot.processUpdate(req.body);
@@ -138,8 +134,8 @@ if (TOKEN && BASE_URL) {
       const history = chatHistory.get(chatId);
       history.push({ role: "user", content: text });
 
-      if (history.length > 10) {
-        history.splice(0, history.length - 10);
+      if (history.length > 8) {
+        history.splice(0, history.length - 8);
       }
 
       const maxTokens = getMaxTokens(text);
@@ -151,34 +147,21 @@ if (TOKEN && BASE_URL) {
 
       let reply = await getAIResponse(messages, maxTokens);
 
-      // 🔥 AUTO-CONTINUE FOR BOTH CHAT & CODE
-      let safetyCounter = 0;
-      while (looksTruncated(reply, maxTokens) && safetyCounter < 3) {
+      /* ✅ AUTO-CONTINUE ONLY FOR CODE */
+      if (isCodeQuestion(text) && reply.length >= 0.9 * maxTokens * 3.5) {
         messages.push({ role: "assistant", content: reply });
-        messages.push({
-          role: "user",
-          content: "Please continue and complete the response."
-        });
+        messages.push({ role: "user", content: "Continue and complete the code." });
 
-        const continuation = await getAIResponse(
-          messages,
-          isCodeQuestion(text) ? 300 : 150
-        );
-
-        reply += " " + continuation;
-        safetyCounter++;
+        const continuation = await getAIResponse(messages, 300);
+        reply += "\n" + continuation;
       }
 
       history.push({ role: "assistant", content: reply });
-
       sendLongMessage(bot, chatId, reply);
 
     } catch (err) {
       console.error("Bot Error:", err.message);
-      bot.sendMessage(
-        chatId,
-        "⚠️ Something went wrong. Please try again later 😊"
-      );
+      bot.sendMessage(chatId, "⚠️ Please try again later 😊");
     }
   });
 
