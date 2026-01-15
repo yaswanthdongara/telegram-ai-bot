@@ -5,10 +5,6 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-/* ===============================
-   BASIC SETUP
-   =============================== */
-
 const app = express();
 app.use(express.json());
 
@@ -17,53 +13,36 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 
 /* ===============================
-   SYSTEM PROMPT (STRICT RULES)
+   SYSTEM PROMPT
    =============================== */
 
 const SYSTEM_PROMPT = {
   role: "system",
   content:
     "You are a Telegram bot 🤖.\n" +
-    "RULES:\n" +
-    "1) NORMAL questions → give a brief explanation in EXACTLY ONE complete sentence.\n" +
-    "2) Do NOT give examples unless explicitly asked.\n" +
-    "3) LONG questions → short paragraph.\n" +
-    "4) CODE questions → FULL code only.\n" +
-    "5) Never leave sentences incomplete.\n" +
-    "6) Use at most one emoji."
+    "Rules:\n" +
+    "1) Normal questions → exactly one complete sentence.\n" +
+    "2) Long questions → short paragraph.\n" +
+    "3) Code questions → full code only.\n" +
+    "4) Use at most one emoji."
 };
-/* ===============================
-   CHAT HISTORY
-   =============================== */
-
-const chatHistory = new Map();
 
 /* ===============================
-   QUESTION TYPE DETECTION
+   HELPERS
    =============================== */
 
 function isCodeQuestion(text) {
-  return /```|class\s+\w+|def\s+\w+|function\s+\w+|while\s*\(|for\s*\(|public\s+static/i.test(
-    text
-  );
+  return /```|function\s+\w+|class\s+\w+|def\s+\w+/i.test(text);
 }
 
 function isLongQuestion(text) {
   return text.length > 120;
 }
 
-function endsCleanly(text) {
-  return /[.!?]$/.test(text.trim());
-}
-
-/* ===============================
-   TOKEN DECISION
-   =============================== */
-
 function getMaxTokens(text) {
   if (isCodeQuestion(text)) return 300;
   if (isLongQuestion(text)) return 150;
-  return 40; // single sentence
+  return 40;
 }
 
 /* ===============================
@@ -86,112 +65,41 @@ async function getAIResponse(messages, maxTokens) {
   });
 
   const data = await response.json();
-  if (data.error) throw new Error(data.error.message);
-
   return data.choices[0].message.content;
 }
 
 /* ===============================
-   TELEGRAM MESSAGE SAFETY
+   TELEGRAM BOT (WEBHOOK)
    =============================== */
 
-function sendLongMessage(bot, chatId, text) {
-  const MAX = 4000;
-  for (let i = 0; i < text.length; i += MAX) {
-    bot.sendMessage(chatId, text.slice(i, i + MAX));
-  }
-}
+const bot = new TelegramBot(TOKEN);
+bot.setWebHook(`${BASE_URL}/webhook`);
 
-/* ===============================
-   HEALTH CHECK
-   =============================== */
-
-app.get("/", (_, res) => {
-  res.send("🤖 Telegram AI Bot running");
+app.post("/webhook", (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
-/* ===============================
-   TELEGRAM BOT (WEBHOOK MODE)
-   =============================== */
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  if (!text) return;
 
-let bot;
+  try {
+    bot.sendChatAction(chatId, "typing");
 
-if (TOKEN && BASE_URL) {
-  bot = new TelegramBot(TOKEN);
-  bot.setWebHook(`${BASE_URL}/webhook`);
+    const messages = [
+      SYSTEM_PROMPT,
+      { role: "user", content: text }
+    ];
 
-  app.post("/webhook", (req, res) => {
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
-  });
+    const reply = await getAIResponse(messages, getMaxTokens(text));
+    bot.sendMessage(chatId, reply);
 
-  bot.on("message", async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
-    if (!text) return;
-
-    try {
-      bot.sendChatAction(chatId, "typing");
-
-      if (!chatHistory.has(chatId)) {
-        chatHistory.set(chatId, []);
-      }
-
-      const history = chatHistory.get(chatId);
-      history.push({ role: "user", content: text });
-
-      if (history.length > 8) {
-        history.splice(0, history.length - 8);
-      }
-
-      const maxTokens = getMaxTokens(text);
-
-      const messages = [
-        SYSTEM_PROMPT,
-        ...history
-      ];
-
-      let reply = await getAIResponse(messages, maxTokens);
-
-      /* 🔒 FIX: COMPLETE SHORT SENTENCES SAFELY */
-      if (
-        !isCodeQuestion(text) &&
-        !isLongQuestion(text) &&
-        !endsCleanly(reply)
-      ) {
-        messages.push({ role: "assistant", content: reply });
-        messages.push({
-          role: "user",
-          content: "Complete the sentence in ONE sentence only."
-        });
-
-        const completion = await getAIResponse(messages, 20);
-        reply = reply + " " + completion;
-      }
-
-      /* 🔥 AUTO-CONTINUE ONLY FOR CODE */
-      if (isCodeQuestion(text) && reply.length >= 0.9 * maxTokens * 3.5) {
-        messages.push({ role: "assistant", content: reply });
-        messages.push({
-          role: "user",
-          content: "Continue and complete the remaining code."
-        });
-
-        const continuation = await getAIResponse(messages, 300);
-        reply += "\n" + continuation;
-      }
-
-      history.push({ role: "assistant", content: reply });
-      sendLongMessage(bot, chatId, reply);
-
-    } catch (err) {
-      console.error("Bot Error:", err.message);
-      bot.sendMessage(chatId, "⚠️ Please try again later 😊");
-    }
-  });
-
-  console.log("Telegram Bot started in WEBHOOK mode ✅");
-}
+  } catch (err) {
+    bot.sendMessage(chatId, "⚠️ Please try again later");
+  }
+});
 
 /* ===============================
    START SERVER
