@@ -13,43 +13,40 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 
 /* ===============================
-   SYSTEM PROMPT
+   MEMORY STORE (10 exchanges)
    =============================== */
 
-const SYSTEM_PROMPT = {
-  role: "system",
-  content:
-    "You are a Telegram bot 🤖.\n" +
-    "Rules:\n" +
-    "1) Normal questions → exactly one complete sentence.\n" +
-    "2) Long questions → short paragraph.\n" +
-    "3) Code questions → full code only.\n" +
-    "4) Use at most one emoji."
-};
+const chatMemory = new Map(); // chatId -> messages[]
+const MAX_EXCHANGES = 10; // 10 user + 10 assistant = 20 messages
+
+function updateMemory(chatId, role, content) {
+  if (!chatMemory.has(chatId)) {
+    chatMemory.set(chatId, []);
+  }
+
+  const history = chatMemory.get(chatId);
+  history.push({ role, content });
+
+  // keep only last 20 messages
+  if (history.length > MAX_EXCHANGES * 2) {
+    chatMemory.set(chatId, history.slice(-MAX_EXCHANGES * 2));
+  }
+}
 
 /* ===============================
    HELPERS
    =============================== */
 
-function isCodeQuestion(text) {
-  return /```|function\s+\w+|class\s+\w+|def\s+\w+/i.test(text);
-}
-
-function isLongQuestion(text) {
-  return text.length > 120;
-}
-
-function getMaxTokens(text) {
-  if (isCodeQuestion(text)) return 300;
-  if (isLongQuestion(text)) return 150;
-  return 40;
+function getMaxTokens() {
+  // ~70 words
+  return 120;
 }
 
 /* ===============================
    OPENROUTER REQUEST
    =============================== */
 
-async function getAIResponse(messages, maxTokens) {
+async function getAIResponse(messages) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -59,13 +56,13 @@ async function getAIResponse(messages, maxTokens) {
     body: JSON.stringify({
       model: "openai/gpt-3.5-turbo",
       messages,
-      max_tokens: maxTokens,
-      temperature: 0.5
+      max_tokens: getMaxTokens(),
+      temperature: 0.4
     })
   });
 
   const data = await response.json();
-  return data.choices[0].message.content;
+  return data.choices[0].message.content.trim();
 }
 
 /* ===============================
@@ -88,12 +85,12 @@ bot.on("message", async (msg) => {
   try {
     bot.sendChatAction(chatId, "typing");
 
-    const messages = [
-      SYSTEM_PROMPT,
-      { role: "user", content: text }
-    ];
+    updateMemory(chatId, "user", text);
 
-    const reply = await getAIResponse(messages, getMaxTokens(text));
+    const messages = chatMemory.get(chatId);
+    const reply = await getAIResponse(messages);
+
+    updateMemory(chatId, "assistant", reply);
     bot.sendMessage(chatId, reply);
 
   } catch (err) {
