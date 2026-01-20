@@ -38,8 +38,7 @@ function updateMemory(chatId, role, content) {
    =============================== */
 
 function getMaxTokens() {
-  // ~70 words
-  return 120;
+  return 275;
 }
 
 /* ===============================
